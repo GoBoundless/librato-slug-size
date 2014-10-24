@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+require 'rubygems'
+require 'bundler'
+Bundler.require(:default)
+require 'pp'
+
+class SlugSizeGauge < Thor
+
+  class ConfigError < StandardError ; end
+
+  def initialize(*)
+    Librato::Metrics.authenticate librato_email, librato_api_key
+    super
+  end
+
+  desc :backfill, "Backfill Librato with slug sizes from deploy log files under BUILD_ROOT"
+  def backfill
+    Dir.entries(build_root)
+      .select { |entry| entry =~ /^\d+$/ }
+      .map    { |entry| File.join(build_root, entry) }
+      .select { |entry| File.stat(entry).directory? }
+      .map    { |dir| File.join(dir,"log") }
+      .each   { |file| record_sample(file) }
+  end
+
+  desc :record_sample, "Record sample of slug size from LOG_FILE"
+  def record_sample(log_file)
+    if value = extract_slug_size(log_file)
+      puts Librato::Metrics.submit "#{app_name}.slug_size" => { measure_time: File.stat(log_file).ctime, value: value }
+    end
+  rescue Librato::Metrics::InvalidMeasureTime => ex
+    STDERR.puts ex.inspect
+  rescue Librato::Metrics::ClientError => ex
+    STDERR.puts ex.inspect
+  end
+
+  private
+
+    def extract_slug_size(log_file)
+      log = File.open(log_file).read
+      if match = log.match(/Compressing... done, ([\d\.]+)MB/)
+        match[1].to_f
+      else
+        STDERR.puts "#{log_file}: No slug size found"
+      end
+    end
+
+    def app_name
+      ENV.fetch("APP_NAME") or raise ConfigError
+    end
+
+    def librato_email
+      ENV.fetch("LIBRATO_EMAIL") or raise ConfigError
+    end
+
+    def librato_api_key
+      ENV.fetch("LIBRATO_API_KEY") or raise ConfigError
+    end
+
+    def build_root
+      ENV.fetch("BUILD_ROOT") or raise ConfigError
+    end
+
+end
+
+SlugSizeGauge.start(ARGV)
